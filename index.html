@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Decalque">
+<meta name="theme-color" content="#000000">
+<title>Decalque</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #000; color: #fff;
+    font-family: -apple-system, system-ui, sans-serif; overflow: hidden;
+    touch-action: none; -webkit-user-select: none; user-select: none; }
+  #stage { position: fixed; inset: 0; overflow: hidden; }
+  video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #overlay { position: absolute; left: 50%; top: 50%; max-width: 80vw; max-height: 80vh;
+    transform-origin: center center; pointer-events: none; display: none; }
+  #grid { position: absolute; inset: 0; pointer-events: none; display: none;
+    background-image:
+      linear-gradient(rgba(255,255,255,.35) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.35) 1px, transparent 1px);
+    background-size: 40px 40px; }
+
+  #start { position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px; padding: 30px;
+    text-align: center; background: #111; z-index: 20; }
+  #start h1 { margin: 0; font-size: 28px; }
+  #start p { margin: 0; color: #bbb; line-height: 1.45; max-width: 340px; }
+
+  .btn { background: #fff; color: #000; border: 0; border-radius: 14px;
+    padding: 14px 22px; font-size: 17px; font-weight: 600; }
+  .btn.sec { background: rgba(255,255,255,.18); color: #fff; }
+
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+    padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+    background: linear-gradient(transparent, rgba(0,0,0,.75) 30%); }
+  #row { display: flex; gap: 8px; justify-content: space-between; margin-top: 10px; }
+  #row button { flex: 1; background: rgba(255,255,255,.18); color: #fff; border: 0;
+    border-radius: 12px; padding: 11px 4px; font-size: 13px; font-weight: 600; }
+  #row button.on { background: #ffd23f; color: #000; }
+  .slider { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .slider input { flex: 1; accent-color: #ffd23f; height: 28px; }
+
+  #hint { position: fixed; left: 0; right: 0; top: calc(14px + env(safe-area-inset-top));
+    text-align: center; z-index: 10; pointer-events: none; }
+  #hint span { background: rgba(0,0,0,.6); padding: 7px 14px; border-radius: 20px; font-size: 14px; }
+  #lockBadge { display: none; }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+
+<div id="start">
+  <h1>Decalque</h1>
+  <p>Escolha uma imagem, aponte a câmera para a peça e trace as linhas que aparecem na tela.</p>
+  <button class="btn" id="startBtn">Abrir câmera</button>
+  <p id="err" style="color:#ff8a80"></p>
+</div>
+
+<div id="stage">
+  <video id="cam" playsinline autoplay muted></video>
+  <img id="overlay" alt="">
+  <div id="grid"></div>
+</div>
+
+<div id="hint"><span id="hintText">Toque em “Imagem” para escolher o desenho</span></div>
+
+<div id="bar">
+  <div class="slider">
+    <span>Transparência</span>
+    <input type="range" id="opacity" min="0.05" max="1" step="0.01" value="0.5">
+  </div>
+  <div id="row">
+    <button id="pickBtn">Imagem</button>
+    <button id="lineBtn">Só linhas</button>
+    <button id="gridBtn">Grade</button>
+    <button id="lockBtn">Travar</button>
+    <button id="resetBtn">Centralizar</button>
+  </div>
+</div>
+
+<input type="file" id="file" accept="image/*">
+
+<script>
+const cam = document.getElementById('cam');
+const img = document.getElementById('overlay');
+const grid = document.getElementById('grid');
+const hintText = document.getElementById('hintText');
+const hint = document.getElementById('hint');
+
+// ----- Câmera -----
+async function startCamera() {
+  const err = document.getElementById('err');
+  err.textContent = '';
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false
+    });
+    cam.srcObject = stream;
+    await cam.play();
+    document.getElementById('start').style.display = 'none';
+    keepAwake();
+  } catch (e) {
+    err.textContent = 'Não consegui abrir a câmera. Confira se o Safari tem permissão para usar a câmera (Ajustes > Safari > Câmera).';
+  }
+}
+document.getElementById('startBtn').onclick = startCamera;
+
+// Mantém a tela acesa enquanto traça
+let wakeLock = null;
+async function keepAwake() {
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') keepAwake(); });
+
+// ----- Imagem -----
+const fileInput = document.getElementById('file');
+document.getElementById('pickBtn').onclick = () => fileInput.click();
+fileInput.onchange = () => {
+  const f = fileInput.files[0];
+  if (!f) return;
+  img.src = URL.createObjectURL(f);
+  img.onload = () => {
+    img.style.display = 'block';
+    resetPos();
+    hintText.textContent = '1 dedo: mover · 2 dedos: zoom e girar';
+    setTimeout(() => { if (!locked) hint.style.display = 'none'; }, 3500);
+  };
+};
+
+// ----- Transparência -----
+const op = document.getElementById('opacity');
+op.oninput = () => img.style.opacity = op.value;
+img.style.opacity = op.value;
+
+// ----- Só linhas (realça contornos) -----
+let lines = false;
+document.getElementById('lineBtn').onclick = (e) => {
+  lines = !lines;
+  e.target.classList.toggle('on', lines);
+  img.style.filter = lines ? 'grayscale(1) contrast(4) brightness(1.1)' : 'none';
+};
+
+// ----- Grade -----
+document.getElementById('gridBtn').onclick = (e) => {
+  const on = grid.style.display !== 'block';
+  grid.style.display = on ? 'block' : 'none';
+  e.target.classList.toggle('on', on);
+};
+
+// ----- Travar -----
+let locked = false;
+const lockBtn = document.getElementById('lockBtn');
+lockBtn.onclick = () => {
+  locked = !locked;
+  lockBtn.classList.toggle('on', locked);
+  lockBtn.textContent = locked ? 'Travado' : 'Travar';
+  hint.style.display = 'block';
+  hintText.textContent = locked ? 'Imagem travada 🔒' : 'Imagem destravada';
+  setTimeout(() => hint.style.display = 'none', 1500);
+};
+
+// ----- Posição: mover, zoom, girar -----
+let x = 0, y = 0, scale = 1, rot = 0;
+function apply() {
+  img.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px) rotate(${rot}rad) scale(${scale})`;
+}
+function resetPos() { x = 0; y = 0; scale = 1; rot = 0; apply(); }
+document.getElementById('resetBtn').onclick = resetPos;
+
+const pts = new Map();
+let start = null;
+const stage = document.getElementById('stage');
+
+function snapshot() {
+  const p = [...pts.values()];
+  if (p.length === 1) return { x, y, scale, rot, cx: p[0].x, cy: p[0].y, n: 1 };
+  const [a, b] = p;
+  return { x, y, scale, rot, n: 2,
+    cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2,
+    dist: Math.hypot(b.x - a.x, b.y - a.y),
+    ang: Math.atan2(b.y - a.y, b.x - a.x) };
+}
+
+stage.addEventListener('pointerdown', e => {
+  if (locked || img.style.display !== 'block') return;
+  pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pts.size <= 2) start = snapshot();
+});
+stage.addEventListener('pointermove', e => {
+  if (!pts.has(e.pointerId) || locked) return;
+  pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const p = [...pts.values()];
+  if (p.length === 1 && start.n === 1) {
+    x = start.x + (p[0].x - start.cx);
+    y = start.y + (p[0].y - start.cy);
+  } else if (p.length >= 2 && start.n === 2) {
+    const [a, b] = p;
+    const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+    const dist = Math.hypot(b.x - a.x, b.y - a.y);
+    const ang = Math.atan2(b.y - a.y, b.x - a.x);
+    scale = Math.max(0.1, Math.min(10, start.scale * dist / start.dist));
+    rot = start.rot + (ang - start.ang);
+    x = start.x + (cx - start.cx);
+    y = start.y + (cy - start.cy);
+  }
+  apply();
+});
+function up(e) {
+  pts.delete(e.pointerId);
+  if (pts.size > 0) start = snapshot();
+}
+stage.addEventListener('pointerup', up);
+stage.addEventListener('pointercancel', up);
+
+// Evita o zoom da página no iPhone
+document.addEventListener('gesturestart', e => e.preventDefault());
+</script>
+</body>
+</html>
